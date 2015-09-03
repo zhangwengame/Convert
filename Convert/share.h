@@ -65,4 +65,12 @@ vec3 UniformSampleSphere(float u1, float u2){
 	float y = r*sinf(phi);
 	return vec3(x, y, z);
 }
+vec3 UniformSampleHemisphere(float u1, float u2){
+	float z = u1;
+	float r = sqrtf(max(0.0f, 1.0f - z*z));
+	float phi = 2.0f*M_PI*u2;
+	float x = r*cosf(phi);
+	float y = r*sinf(phi);
+	return vec3(x, y, z);
+}
 #endif

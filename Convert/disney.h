@@ -2,7 +2,7 @@
 #include "share.h"
 #define __DISNEY_H
 #define PI 3.1415926535897932
-
+//Diffuse_Lambert + D_GGX * G_Smith * F_None
 /*float3 Diffuse_Lambert(float3 DiffuseColor, float NoL)
 {
 	return NoL * DiffuseColor / PI;
