@@ -15,7 +15,7 @@ float D_GGX(float Roughness, float NoH)
 	float m = Roughness * Roughness;
 	float m2 = m * m;
 	float d = (NoH * m2 - NoH) * NoH + 1;	// 2 mad
-	return m2 / (d*d);					// 2 mul, 1 rcp
+	return m2 / (d*d)/PI;					// 2 mul, 1 rcp
 }
 
 // Smith term for GGX modified by Disney to be less "hot" for small roughness values

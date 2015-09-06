@@ -9,12 +9,13 @@
 double opts[LM_OPTS_SZ], info[LM_INFO_SZ];
 const int NUMHEMIPOINT = 10000;
 const int BLINNSAMPLE = 10000;
+const int DRAWSAMPLE = 10000;
 vec3 HemiPoint[NUMHEMIPOINT][2];
 double Blinn[BLINNSAMPLE];
-float Rb=30, Rd, C;
-double p[] = { 0.5, 0.1 };
+float Rb=100, Rd, C;
+double p[] = { 0.5, 0.2 };
 double x[BLINNSAMPLE];
-float scale = 0.9;
+float scale = 0.7;
 float eye[] = { 0, 0, 10 };
 float center[] = { 0, 0, 0 };
 bool bPersp = false;
@@ -23,6 +24,8 @@ bool bWire = false;
 bool bDorB = false;
 float fRotate = 0;
 float fDistance = 0.2f;
+bool reOutput = true;
+vec3 Wi = UniformSampleHemisphere(random(), random());
 void reshape(int width, int height)
 {
 	if (height == 0)										// Prevent A Divide By Zero By
@@ -42,13 +45,15 @@ void idle()
 {
 	glutPostRedisplay();
 }
+float maxc = 1.0;
 void key(unsigned char k, int x, int y)
 {
 	switch (k)
 	{
 		case ' ': {bAnim = !bAnim; break; }
 		case 'o': {bWire = !bWire; break; }
-		case 'p': {bDorB = !bDorB; if (!bDorB) printf("Blinn\n"); else printf("Disney\n"); break; }
+		case 'p': {bDorB = !bDorB; if (bDorB) printf("Blinn\n"); else printf("Disney\n"); reOutput = true; break; }
+		case 'r': { Wi = UniformSampleHemisphere(random(), random()); printf("Wi %f %f %f\n", Wi.x, Wi.y, Wi.z); reOutput = true; maxc = 1.0; break; }
 		case 'a': {eye[0] = eye[0] + fDistance; center[0] = center[0] + fDistance;
 			break;
 		}
@@ -73,36 +78,49 @@ void key(unsigned char k, int x, int y)
 	}
 }
 //const float F = 0.06 + (1 - 0.06)*std::pow(1 - dot(bRec.wo, lH), 5.0);
-float maxc = 1.0;
+
+
 void drawContrast(){
 	MicrofacetDistribution dis(MicrofacetDistribution::EPhong, Rb);
 	float color, max = 0, min = 9999999999999;
+	glBegin(GL_LINES);
+	glColor3f(1.0f, 1.0f, 1.0f);
+	glVertex3f(0.0f, 0.0f, 0.0f);
+	glVertex3f(Wi.x, Wi.y, Wi.z);
+	glEnd();
 	glBegin(GL_POINTS);
-	for (int i = 0; i < BLINNSAMPLE;i++)
+	for (int i = 0; i < DRAWSAMPLE;i++)
 	{
-		vec3 H = normalize(HemiPoint[i][0] + HemiPoint[i][1]);
-		if (H.z < 0)continue;
+		vec3 Wo = UniformSampleHemisphere(random(), random());
+		vec3 Wh = normalize(Wi + Wo);
+		if (Wh.z < 0)continue;
 		if (bDorB)
 		{
-			float F = 0.06 + (1 - 0.06)*pow(1 - dot(HemiPoint[i][1], H), 5.0f);
-			float D = dis.eval(H);
+			float F = 0.06 + (1 - 0.06)*pow(1 - dot(Wo, Wh), 5.0f);
+			float D = dis.eval(Wh);
 			color = D * F;
 		}
 		else
 		{				
-			float D = D_GGX(Rd, H.z);
-			float G = G_Smith(Rd, HemiPoint[i][1].z, HemiPoint[i][0].z);
+			float D = D_GGX(Rd, Wh.z);
+			float G = G_Smith(Rd, Wi.z, Wo.z);
 			color = C * D * G;
 		}
 		
 		glColor3f(color / maxc*scale + (1 - scale), color / maxc*scale + (1 - scale), color / maxc*scale + (1 - scale));
-		glVertex3f(H.x, H.y, H.z);
+		Wo = Wo*(color / maxc*scale + (1 - scale));
+		glVertex3f(Wo.x, Wo.y, Wo.z);
 		if (color > max) max = color;
 		if (color < min) min = color;
 	}
 	glEnd();
 	if (max>maxc)maxc = max;
-	printf("%f %f %f\n", min, max,maxc);
+	if (max < 1.0&&abs(maxc-1.0)<1e-5) maxc = max;
+	if (reOutput)
+	{
+		printf("%f %f %f\n", min, max, maxc);
+		reOutput = false;
+	}
 }
 void redraw()
 {
@@ -181,6 +199,10 @@ void fitDfromB(){
 	}
 	memset(x, 0, sizeof(x));
 	int itmax = 1000;
+	//if (p[0] < 1e-4) p[0] = 0.01;
+	//if (p[1] < 1e-4) p[1] = 0.01;
+//	p[0] = 0.5;
+//	p[1] = 0.2;
 	int ret = dlevmar_dif(DisneyF_2, p, x, m, n, itmax, opts, info, NULL, NULL, NULL);
 	printf("Levenberg-Marquardt returned %d in %g iter, reason %g\nSolution: ", ret, info[5], info[6]);
 	for (int i = 0; i<m; ++i)
@@ -189,12 +211,28 @@ void fitDfromB(){
 	for (int i = 0; i<LM_INFO_SZ; ++i)
 		printf("%g ", info[i]);
 	printf("\n");
-	system("pause");
+	//system("pause");
 	Rd = p[0];
 	C = p[1];
 }
+double table[10000][2];
 int main(int argc, char *argv[]){
-	fitDfromB();
+	int seq = 0;
+	for (float i = 0.0; i < 100000; i+=10){
+		Rb = i;
+		fitDfromB();
+		table[seq][0] = Rd;
+		table[seq][1] = C;
+		seq++;
+		printf("%f\n", i);
+	}
+	FILE *f;
+	fopen_s(&f,"DUIZHAO.txt", "a+");
+	for (int i = 0; i < seq; i++)
+	{
+		fprintf(f, "%f,%f,", table[i][0],table[i][1]);
+	}	
+	fclose(f);
 	srand((unsigned)time(0));
 	glutInit(&argc, argv);
 	glutInitWindowSize(800, 800);
