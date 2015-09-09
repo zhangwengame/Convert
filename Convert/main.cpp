@@ -7,10 +7,12 @@
 #include "microfacet.h"
 #include "levmar.h"
 double opts[LM_OPTS_SZ], info[LM_INFO_SZ];
-const int NUMHEMIPOINT = 10000;
+const int NUMHEMIPOINT = 10010;
 const int BLINNSAMPLE = 10000;
 const int DRAWSAMPLE = 10000;
+const int RSAMPLE = 1000;
 vec3 HemiPoint[NUMHEMIPOINT][2];
+double Importance[NUMHEMIPOINT];
 double Blinn[BLINNSAMPLE];
 float Rb=100, Rd, C;
 double p[] = { 0.5, 0.2 };
@@ -22,6 +24,7 @@ bool bPersp = false;
 bool bAnim = false;
 bool bWire = false;
 bool bDorB = false;
+bool bforh = true;
 float fRotate = 0;
 float fDistance = 0.2f;
 bool reOutput = true;
@@ -46,14 +49,16 @@ void idle()
 	glutPostRedisplay();
 }
 float maxc = 1.0;
+float maxb = 0.1, maxd = 0.1;
 void key(unsigned char k, int x, int y)
 {
 	switch (k)
 	{
 		case ' ': {bAnim = !bAnim; break; }
 		case 'o': {bWire = !bWire; break; }
+		case 'f': {bforh = !bforh; if (bforh) printf("combine\n"); else printf("seperate\n"); reOutput = true; maxc = 1.0; maxb = maxd = 0.1; break;  }
 		case 'p': {bDorB = !bDorB; if (bDorB) printf("Blinn\n"); else printf("Disney\n"); reOutput = true; break; }
-		case 'r': { Wi = UniformSampleHemisphere(random(), random()); printf("Wi %f %f %f\n", Wi.x, Wi.y, Wi.z); reOutput = true; maxc = 1.0; break; }
+		case 'r': { Wi = UniformSampleHemisphere(random(), random()); printf("Wi %f %f %f\n", Wi.x, Wi.y, Wi.z); reOutput = true; maxc = 1.0; maxb = maxd = 0.1;  break; }
 		case 'a': {eye[0] = eye[0] + fDistance; center[0] = center[0] + fDistance;
 			break;
 		}
@@ -78,9 +83,18 @@ void key(unsigned char k, int x, int y)
 	}
 }
 //const float F = 0.06 + (1 - 0.06)*std::pow(1 - dot(bRec.wo, lH), 5.0);
+vec3 ImportanceSampleBlinn(double *pdf, double n){
+	float phi = 2.0f * PI * random();
+	float theta = acos(pow((double)1.0f - random(), (double)1.0f / (n + 1.0f)));
+	*pdf = (n + 1) / (2 * PI)*pow((double)cos(theta), (double)n)*sin(theta);
+	return vec3(sin(theta) * cos(phi),
+		sin(theta) * sin(phi),
+		cos(theta));
 
+}
 
 void drawContrast(){
+	int ddebug = 0;
 	MicrofacetDistribution dis(MicrofacetDistribution::EPhong, Rb);
 	float color, max = 0, min = 9999999999999;
 	glBegin(GL_LINES);
@@ -91,24 +105,45 @@ void drawContrast(){
 	glBegin(GL_POINTS);
 	for (int i = 0; i < DRAWSAMPLE;i++)
 	{
-		vec3 Wo = UniformSampleHemisphere(random(), random());
-		vec3 Wh = normalize(Wi + Wo);
+		double pdf;
+		vec3 Wh = ImportanceSampleBlinn(&pdf,Rb);
+		vec3 Wo = normalize(Wh*dot(Wi, Wh) * 2 - Wi);
+		if (dot(Wo, vec3(0, 0, 1)) < 0) continue;
 		if (Wh.z < 0)continue;
 		if (bDorB)
 		{
 			float F = 0.06 + (1 - 0.06)*pow(1 - dot(Wo, Wh), 5.0f);
 			float D = dis.eval(Wh);
 			color = D * F;
+			if (color > maxb) maxb = color;
 		}
 		else
 		{				
 			float D = D_GGX(Rd, Wh.z);
 			float G = G_Smith(Rd, Wi.z, Wo.z);
 			color = C * D * G;
+			if (color>1000000)
+			{
+				ddebug = 1;
+				float D = D_GGX(Rd, Wh.z);
+				float G = G_Smith(Rd, Wi.z, Wo.z);
+			}
+			if (color > maxd) maxd = color;
+	/*		if (color > maxb)
+			{
+				ddebug = 1;
+				float D = D_GGX(Rd, Wh.z);
+				float G = G_Smith(Rd, Wi.z, Wo.z);
+			}*/
+				
 		}
-		
-		glColor3f(color / maxc*scale + (1 - scale), color / maxc*scale + (1 - scale), color / maxc*scale + (1 - scale));
-		Wo = Wo*(color / maxc*scale + (1 - scale));
+		float cscale;
+		if (bforh)
+			cscale = maxc;
+		else
+			cscale = bDorB ? maxb : maxd;
+		glColor3f(color / cscale*scale + (1 - scale), color / cscale*scale + (1 - scale), color / cscale*scale + (1 - scale));
+		Wo = Wo*(color / cscale*scale + (1 - scale));
 		glVertex3f(Wo.x, Wo.y, Wo.z);
 		if (color > max) max = color;
 		if (color < min) min = color;
@@ -168,71 +203,110 @@ void DisneyF_1(double *p, double *hx, int m, int n, void *adata){
 	}
 }
 void DisneyF_2(double *p, double *hx, int m, int n, void *adata){
+	double r = p[0] >= 0.0f ? p[0] : 0.0f;
 	for (int i = 0; i < BLINNSAMPLE; i++)
 	{
 		vec3 H = normalize(HemiPoint[i][0] + HemiPoint[i][1]);
 		if (H.z < 0)continue;
-		float D = D_GGX(p[0], H.z);
-		float G = G_Smith(p[0], HemiPoint[i][1].z, HemiPoint[i][0].z);
-		hx[i] = Blinn[i] - p[1] * D*G;
+		float D = D_GGX(r, H.z);
+		float G = G_Smith(r, HemiPoint[i][1].z, HemiPoint[i][0].z);
+		hx[i] = (Blinn[i] - p[1] * D*G)/Importance[i];
 	}
 }
-void fitDfromB(){
+
+void fitDfromB_Force_N(){
+	int ddebug = 0;
 	for (int i = 0; i < NUMHEMIPOINT; i++)
 	{
-		HemiPoint[i][0] = UniformSampleHemisphere(random(), random());
-		HemiPoint[i][1] = UniformSampleHemisphere(random(), random());
+		vec3 Wo, Wh;
+		float theta = 0.50*PI*(0.0001*i + 0.00005);
+		HemiPoint[i][0] = vec3(sin(theta),0,cos(theta));
+		do{
+			Wh = ImportanceSampleBlinn(&Importance[i], Rb);
+			Wo = normalize(Wh*dot(HemiPoint[i][0], Wh) * 2 - HemiPoint[i][0]);
+			Importance[i] /= (4 * dot(Wo, Wh));
+			HemiPoint[i][1] = Wo;
+		} while (Wo.z < 0.0f);
 	}
-	int m = 2;
-	int n = BLINNSAMPLE;
-	opts[0] = LM_INIT_MU; opts[1] = 1E-15; opts[2] = 1E-15; opts[3] = 1E-20;
-	opts[4] = LM_DIFF_DELTA;
-
 	MicrofacetDistribution dis(MicrofacetDistribution::EPhong, Rb);
-	for (int i = 0; i < n; i++)
+	for (int i = 0; i < BLINNSAMPLE; i++)
 	{
 		vec3 H = normalize(HemiPoint[i][0] + HemiPoint[i][1]);
 		const float F = 0.06 + (1 - 0.06)*pow(1 - dot(HemiPoint[i][1], H), 5.0f);
 		if (H.z<0)continue;
 		float D = dis.eval(H);
-		Blinn[i] = D*F;
+		Blinn[i] = D*F*HemiPoint[i][0].z;
+
 	}
-	memset(x, 0, sizeof(x));
-	int itmax = 1000;
-	//if (p[0] < 1e-4) p[0] = 0.01;
-	//if (p[1] < 1e-4) p[1] = 0.01;
-//	p[0] = 0.5;
-//	p[1] = 0.2;
-	int ret = dlevmar_dif(DisneyF_2, p, x, m, n, itmax, opts, info, NULL, NULL, NULL);
-	printf("Levenberg-Marquardt returned %d in %g iter, reason %g\nSolution: ", ret, info[5], info[6]);
-	for (int i = 0; i<m; ++i)
-		printf("%.7g ", p[i]);
-	printf("\n\nMinimization info:\n");
-	for (int i = 0; i<LM_INFO_SZ; ++i)
-		printf("%g ", info[i]);
-	printf("\n");
-	//system("pause");
-	Rd = p[0];
-	C = p[1];
+	float diff[1001];		
+	
+	float min = FLT_MAX,minRd,minScale;
+	for (int i = 1; i <= RSAMPLE; i++){
+		float iRd = 1.0/RSAMPLE*i;
+		float sum = 0,ascale=1.0;
+		double sumfafb = 0.0, sumfb2 = 0.0;
+		for (int j = 0; j < BLINNSAMPLE; j++)
+		{			
+			vec3 H = normalize(HemiPoint[j][0] + HemiPoint[j][1]);
+			if (H.z < 0)continue;
+			float D = D_GGX(iRd, H.z);
+			float G = G_Smith(iRd, HemiPoint[j][1].z, HemiPoint[j][0].z);
+			float Disney = D * G* HemiPoint[j][0].z;			
+			sumfafb += Blinn[j] * Disney;
+			sumfb2 += Disney*Disney;
+		}
+		ascale = sumfafb / sumfb2;
+		for (int j = 0; j < BLINNSAMPLE; j++)
+		{
+			vec3 H = normalize(HemiPoint[j][0] + HemiPoint[j][1]);
+			if (H.z < 0)continue;
+			float D = D_GGX(iRd, H.z);
+			float G = G_Smith(iRd, HemiPoint[j][1].z, HemiPoint[j][0].z);
+			float Disney = D * G* HemiPoint[j][0].z*ascale;
+			sum += (Disney - Blinn[j]) * (Disney - Blinn[j]) / (Importance[j] * Importance[j]);
+		}		
+		diff[i] = sum;
+		if (sum < min)
+		{
+			min = sum;
+			minRd = iRd;
+			minScale = ascale;
+		}
+	}
+	
+	
+	Rd = minRd;
+	C = minScale;
 }
+void fitDfromB_Force();
+void fitDfromB_LM();
 double table[10000][2];
 int main(int argc, char *argv[]){
 	int seq = 0;
-	for (float i = 0.0; i < 100000; i+=10){
+	float begin = 1500000.0f;
+	char name[100];
+	for (float i =begin; i < begin+5.0; i+=10){
+	//for (float i = 0; i <= 100000; i += 10){
 		Rb = i;
-		fitDfromB();
+		fitDfromB_Force_N();
 		table[seq][0] = Rd;
 		table[seq][1] = C;
 		seq++;
-		printf("%f\n", i);
+		printf("%f Rd %f C %f\n", i,Rd,C);
+		if (int(i) % 10000 == 0)
+		{
+			sprintf_s(name, "DUIZHAO_%d.txt", i);
+			FILE *f;
+			fopen_s(&f, name, "w");
+			for (int i = 0; i < seq; i++)
+			{
+				fprintf(f, "%f,%f,", table[i][0], table[i][1]);
+			}
+			fclose(f);
+		}
+
 	}
-	FILE *f;
-	fopen_s(&f,"DUIZHAO.txt", "a+");
-	for (int i = 0; i < seq; i++)
-	{
-		fprintf(f, "%f,%f,", table[i][0],table[i][1]);
-	}	
-	fclose(f);
+
 	srand((unsigned)time(0));
 	glutInit(&argc, argv);
 	glutInitWindowSize(800, 800);
@@ -246,20 +320,120 @@ int main(int argc, char *argv[]){
 	glutMainLoop();
 	return 0;
 }
-/*
-void tryBlinee(){
+int gui = 0, lianguijs = 0;
+int liangui = 0;
+double l1, l0;
+void fitDfromB_Force(){
+	int ddebug = 0;
 	for (int i = 0; i < NUMHEMIPOINT; i++)
 	{
-		HemiPoint[i][0] = UniformSampleHemisphere(random(), random());
-		HemiPoint[i][1] = UniformSampleHemisphere(random(), random());
+		vec3 Wo, Wh;
+		float theta = 0.50*PI*(0.0001*i + 0.00005);
+		HemiPoint[i][0] = vec3(sin(theta), 0, cos(theta));
+		do{
+			Wh = ImportanceSampleBlinn(&Importance[i], Rb);
+			Wo = normalize(Wh*dot(HemiPoint[i][0], Wh) * 2 - HemiPoint[i][0]);
+			Importance[i] /= (4 * dot(Wo, Wh));
+			HemiPoint[i][1] = Wo;
+		} while (Wo.z < 0.0f);
 	}
-	int m = 1;
+	MicrofacetDistribution dis(MicrofacetDistribution::EPhong, Rb);
+	float maxb = 0;
+	int maxi;
+	for (int i = 0; i < BLINNSAMPLE; i++)
+	{
+		vec3 H = normalize(HemiPoint[i][0] + HemiPoint[i][1]);
+		const float F = 0.06 + (1 - 0.06)*pow(1 - dot(HemiPoint[i][1], H), 5.0f);
+		if (H.z<0)continue;
+		float D = dis.eval(H);
+		Blinn[i] = D*F*HemiPoint[i][0].z;
+		if (Blinn[i] > maxb)
+		{
+			maxb = Blinn[i];
+			maxi = i;
+		}
+	}
+	float diff[1001];
+	float min = FLT_MAX, minRd;
+	for (int i = 1; i <= RSAMPLE; i++){
+		float iRd = 1.0 / RSAMPLE*i;
+		float sum = 0, ascale = 1.0;
+		if (i == 300)
+			ddebug = 1;
+		{
+			vec3 H = normalize(HemiPoint[maxi][0] + HemiPoint[maxi][1]);
+			float D = D_GGX(iRd, H.z);
+			float G = G_Smith(iRd, HemiPoint[maxi][1].z, HemiPoint[maxi][0].z);
+			ascale = maxb / (D*G);
+		}
+		//MicrofacetDistribution dis(MicrofacetDistribution::EPhong, iRd);
+		for (int j = 0; j < BLINNSAMPLE; j++)
+		{
+			/*	vec3 H = normalize(HemiPoint[j][0] + HemiPoint[j][1]);
+			const float F = 0.06 + (1 - 0.06)*pow(1 - dot(HemiPoint[j][1], H), 5.0f);
+			if (H.z<0)continue;
+			float D = dis.eval(H);
+			float Blinn_ = D*F*HemiPoint[j][0].z;
+			sum += (Blinn_ - Blinn[j]) * (Blinn_ - Blinn[j]);*/
+			vec3 H = normalize(HemiPoint[j][0] + HemiPoint[j][1]);
+			if (H.z < 0)continue;
+			float D = D_GGX(iRd, H.z);
+			float G = G_Smith(iRd, HemiPoint[j][1].z, HemiPoint[j][0].z);
+			float Disney = D * G* HemiPoint[j][0].z*ascale;
+			sum += (Disney - Blinn[j]) * (Disney - Blinn[j]);// / (Importance[j] * Importance[j]);
+
+		}
+		diff[i] = sum;
+		if (sum < min)
+		{
+			min = sum;
+			minRd = iRd;
+		}
+	}
+	//	minRd = 0.3;
+	double sumfafb = 0.0, sumfb2 = 0.0;
+	MicrofacetDistribution diss(MicrofacetDistribution::EPhong, minRd);
+	for (int i = 0; i < BLINNSAMPLE; i++){
+		/*	vec3 H = normalize(HemiPoint[i][0] + HemiPoint[i][1]);
+		const float F = 0.06 + (1 - 0.06)*pow(1 - dot(HemiPoint[i][1], H), 5.0f);
+		if (H.z<0)continue;
+		float D = diss.eval(H);
+		float Blinn_ = D*F*HemiPoint[i][0].z;
+		sumfafb +=  Blinn[i] * Blinn_;
+		sumfb2 += Blinn_*Blinn_;*/
+		vec3 H = normalize(HemiPoint[i][0] + HemiPoint[i][1]);
+		if (H.z < 0)continue;
+		float D = D_GGX(minRd, H.z);
+		float G = G_Smith(minRd, HemiPoint[i][1].z, HemiPoint[i][0].z);
+		float Disney = D*G*HemiPoint[i][0].z;
+
+		sumfafb += Blinn[i] * Disney;
+		sumfb2 += Disney*Disney;
+	}
+	Rd = minRd;
+	C = sumfafb / sumfb2;
+}
+void fitDfromB_LM(){
+F:
+	float minE = FLT_MAX, minL0, minL1;
+	for (int i = 0; i < NUMHEMIPOINT; i++)
+	{
+		vec3 Wo, Wh;
+		HemiPoint[i][0] = UniformSampleHemisphere(random(), random());
+		do{
+			Wh = ImportanceSampleBlinn(&Importance[i], Rb);
+			Wo = normalize(Wh*dot(HemiPoint[i][0], Wh) * 2 - HemiPoint[i][0]);
+			Importance[i] /= (4 * dot(Wo, Wh));
+			HemiPoint[i][1] = Wo;
+		} while (Wo.z < 0.0f);
+	}
+	int m = 2;
 	int n = BLINNSAMPLE;
 	opts[0] = LM_INIT_MU; opts[1] = 1E-15; opts[2] = 1E-15; opts[3] = 1E-20;
 	opts[4] = LM_DIFF_DELTA;
-	double p[] = { 1 };
-	double x[BLINNSAMPLE];
-	MicrofacetDistribution dis(MicrofacetDistribution::EPhong, 12.235);
+	float maxb = 0;
+	int maxi = 0;
+	MicrofacetDistribution dis(MicrofacetDistribution::EPhong, Rb);
 	for (int i = 0; i < n; i++)
 	{
 		vec3 H = normalize(HemiPoint[i][0] + HemiPoint[i][1]);
@@ -267,10 +441,20 @@ void tryBlinee(){
 		if (H.z<0)continue;
 		float D = dis.eval(H);
 		Blinn[i] = D*F;
+		if (Blinn[i] > maxb) { maxb = Blinn[i]; maxi = i; };
 	}
 	memset(x, 0, sizeof(x));
 	int itmax = 1000;
-	int ret = dlevmar_dif(BlinnF, p, x, m, n, itmax, opts, info, NULL, NULL, NULL);
+	//if (p[0] < 1e-4) p[0] = 0.01;
+	//if (p[1] < 1e-4) p[1] = 0.01;
+	{
+		p[0] = random()*0.5;
+		vec3 H = normalize(HemiPoint[maxi][0] + HemiPoint[maxi][1]);
+		float D = D_GGX(p[0], H.z);
+		float G = G_Smith(p[0], HemiPoint[maxi][1].z, HemiPoint[maxi][0].z);
+		p[1] = maxb / (D*G);
+	}
+	int ret = dlevmar_dif(DisneyF_2, p, x, m, n, itmax, opts, info, NULL, NULL, NULL);
 	printf("Levenberg-Marquardt returned %d in %g iter, reason %g\nSolution: ", ret, info[5], info[6]);
 	for (int i = 0; i<m; ++i)
 		printf("%.7g ", p[i]);
@@ -278,80 +462,30 @@ void tryBlinee(){
 	for (int i = 0; i<LM_INFO_SZ; ++i)
 		printf("%g ", info[i]);
 	printf("\n");
-	system("pause");
-}
-double F[100];
-void line(double *p, double *hx, int m, int n, void *adata){
-	for (int i = 0; i < n; i++)
+	printf("gui le %d ci\n", gui);
+	//system("pause");
+
+	if (p[0] < 0 || p[1] < 0 || p[0]>1)
 	{
-		hx[i] = F[i] - p[0] * i * 11 - p[1];
+		gui++;
+		liangui++;
+		goto F;
 	}
-}
-void tryLM(){
-	int m = 2;
-	int n = 100;
-	opts[0] = LM_INIT_MU; opts[1] = 1E-15; opts[2] = 1E-15; opts[3] = 1E-20;
-	opts[4] = LM_DIFF_DELTA;
-	double p[] = { 2, 5 };
-	double x[100];
-	for (int i = 0; i < n; i++)
+	if (info[1] < minE){
+		minE = info[1];
+		minL0 = p[0];
+		minL1 = p[1];
+	}
+	if (info[1] > 5000/*||abs((p[0]-l0)/l0)>0.3||abs((p[1]-l1)/l1)>0.8*/)
 	{
-		double x = i * 11;
-		F[i] = x*3.12 + 6.7 + random();
+
+		gui++;
+		liangui++;
+		if (liangui<20)
+			goto F;
 	}
-	memset(x, 0, sizeof(x));
-	int itmax = 1000;
-	int ret = dlevmar_dif(line, p, x, m, n, itmax, opts, info, NULL, NULL, NULL);
-	printf("Levenberg-Marquardt returned %d in %g iter, reason %g\nSolution: ", ret, info[5], info[6]);
-	for (int i = 0; i<m; ++i)
-		printf("%.7g ", p[i]);
-	printf("\n\nMinimization info:\n");
-	for (int i = 0; i<LM_INFO_SZ; ++i)
-		printf("%g ", info[i]);
-	printf("\n");
-	system("pause");
-}*/
-/*
-void drawBlinn(){
-	MicrofacetDistribution dis(MicrofacetDistribution::EPhong, 20);
-	float max = 0, min = 9999999999999;
-	glBegin(GL_POINTS);
-	float step = 0.05, color;
-	int times = 100000;
-	while (times--)
-	{
-		vec3 H = UniformSampleSphere(random(), random());
-		if (H.z<0)continue;
-		float D = dis.eval(H);
-		color = D / 0.4 + 0;
-		glColor3f(color, color, color);
-		glVertex3f(H.x, H.y, H.z);
-		if (D > max) max = D;
-		if (D < min) min = D;
-	}
-	glEnd();
-	printf("%f %f\n", min, max);
+	printf("lianguijs %d\n", lianguijs);
+	liangui = 0;
+	Rd = minL0;
+	C = minL1;
 }
-void drawDisney(){
-	float max = 0, min = 9999999999999;
-	glBegin(GL_POINTS);
-	float step = 0.05, color;
-	float roughness = 0.5;
-	int times = 100000;
-	for (float i = 0; i <= 1.0; i += 0.01)
-		for (float j = 0; j <= 1.0; j += 0.01)
-		{
-			//vec3 H = UniformSampleHemisphere(random(), random());
-			vec3 H = UniformSampleHemisphere(i, j);
-			if (H.z<0)continue;
-			float D = D_GGX(roughness, dot(H, vec3(0, 0, 1)));
-			//	float G = G_Smith(1.0,)
-			color = D / 5 + 0;
-			//glColor3f(color, color, color);
-			glVertex3f(H.x, H.y, H.z);
-			if (D > max) max = D;
-			if (D < min) min = D;
-		}
-	glEnd();
-	printf("%f %f\n", min, max);
-}*/
